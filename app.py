@@ -11,6 +11,8 @@ import asyncio
 import io
 import shutil
 import sys
+import time
+import datetime
 import os
 import psutil
 import gc
@@ -18,17 +20,19 @@ import nvidia_smi
 
 # Imports: Image Libraries
 from PIL import Image
-import base64
 import cv2
 from dotenv import load_dotenv
 
-# Imports: Detectron 2
+# Imports: Detectron 2, OpenVINO, and YOLO11
 import torch, torchvision
 import detectron2
 from detectron2.utils.logger import setup_logger
 from detectron2.engine import DefaultPredictor
 from detectron2.config import get_cfg
 from detectron2 import model_zoo
+
+from openvino.runtime import Core 
+from ultralytics import YOLO
 
 # Imports: Data Manipulation
 import numpy as np
@@ -72,31 +76,65 @@ api = Api(app, version='1.0', title='Road Vision', description='Road Vision API 
 for roadvision_namespace in [heath_check_ns, image_detection_ns]:
     api.add_namespace(roadvision_namespace)
 
-# Load Configurations
 def load_models(roadvision_config):
-    '''loads all available models'''
-    # Create model object and define tracking parameters
+    """Loads all available models."""
     preds = {}
     try:
+        start = time.perf_counter()
         for roadvision_channel, channel_config in roadvision_config.items():
             if str(channel_config["model_weight"]) not in preds:
-                cfg = get_cfg()
-                cfg.merge_from_file(model_zoo.get_config_file(channel_config["model_config"]))
-                cfg.MODEL.WEIGHTS = str(channel_config["model_weight"]) 
-                cfg.MODEL.ROI_HEADS.NUM_CLASSES = channel_config["num_of_classes"]
-                if use_cuda:
-                    cfg.MODEL.DEVICE = channel_config["device"] 
-                else:
-                    cfg.MODEL.DEVICE = "cpu" 
-                cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = channel_config["model_threshold"]
-                pred = DefaultPredictor(cfg)
+                model_type = channel_config["model"]
+                
+                if model_type == "Detectron2":
+                    # Detectron2 Model
+                    device = channel_config["device"] if use_cuda else "cpu"  # Determine device availability
+                    cfg = get_cfg()
+                    cfg.merge_from_file(model_zoo.get_config_file(channel_config["model_config"]))
+                    cfg.MODEL.WEIGHTS = str(channel_config["model_weight"])
+                    cfg.MODEL.ROI_HEADS.NUM_CLASSES = channel_config["num_of_classes"]
+                    cfg.MODEL.DEVICE = device  # Use determined device
+                    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = channel_config["model_threshold"]
+                    pred = DefaultPredictor(cfg)
+                
+                elif model_type == "OpenVINO":
+                    # OpenVINO Model
+                    device = "AUTO"
+                    ov_model = str(channel_config["model_weight"])
+                    num_cores = os.cpu_count()
+                    ov_config = {
+                        "INFERENCE_NUM_THREADS": str(num_cores),
+                        "PERFORMANCE_HINT": "THROUGHPUT",
+                        "INFERENCE_PRECISION_HINT": "f32"
+                    }
+                    core = Core()
+                    model = core.read_model(model=ov_model)
+                    compiled_model = core.compile_model(model=model, device_name=device, config=ov_config)
+                    pred = compiled_model.create_infer_request()
 
+                    logging.info(f"vino.checkpoint:[Checkpointer] Loading from {ov_model} ...")
+                
+                elif model_type == "YOLO11":
+                    # YOLOv11 Model
+                    device = channel_config["device"] if use_cuda else "cpu"  # Determine device availability 
+                    yolo_model = str(channel_config["model_weight"])
+                    pred = YOLO(channel_config["model_weight"])
+                    pred.overrides["conf"] = channel_config["model_threshold"]
+                    pred.overrides["device"] = device  # Set device for YOLO
+                    logging.info(f"yolo.checkpoint:[Checkpointer] Loading from {yolo_model} ...")
+                    
+                else:
+                    raise ValueError(f"Unsupported model type: {model_type}")
+                
                 preds[str(channel_config["model_weight"])] = pred
+        
+        elapsed = time.perf_counter() - start
+        logging.info(f'Time taken to load all models: {elapsed:.6f} seconds')
 
         return preds
     except Exception as error:
         roadvision_notification = f"roadvision Error: {error}, Description: {roadvision_channel} model/config not found"
         logging.exception(roadvision_notification)
+
 
 def get_channel_configurations(roadvision_channel, config_params):
     '''Returns a specific parameter from the config of a roadvision configuration'''
@@ -334,7 +372,6 @@ async def analyse_segm(roadvision_channel):
         roadvision_notification = f"roadvision Error: {error}, Description: {roadvision_channel} not found"
         logging.exception(roadvision_notification)
         return roadvision_notification
-
 
 
 # ------------------------------- SWAGGER FUNCTIONS AND ROUTES -------------------------------

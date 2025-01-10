@@ -1,7 +1,7 @@
 import pandas as pd
 
 
-def rule_Detectron2(channel_config, sure_classes, present_classes, 
+def rule_roadvision(channel_config, sure_classes, present_classes, 
                             img_output, full_output, *args):
     '''
     This function will:
