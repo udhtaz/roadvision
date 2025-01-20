@@ -96,22 +96,22 @@ def load_models(roadvision_config):
                     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = channel_config["model_threshold"]
                     pred = DefaultPredictor(cfg)
                 
-                elif model_type == "OpenVINO":
-                    # OpenVINO Model
-                    device = "AUTO"
-                    ov_model = str(channel_config["model_weight"])
-                    num_cores = os.cpu_count()
-                    ov_config = {
-                        "INFERENCE_NUM_THREADS": str(num_cores),
-                        "PERFORMANCE_HINT": "THROUGHPUT",
-                        "INFERENCE_PRECISION_HINT": "f32"
-                    }
-                    core = Core()
-                    model = core.read_model(model=ov_model)
-                    compiled_model = core.compile_model(model=model, device_name=device, config=ov_config)
-                    pred = compiled_model.create_infer_request()
+                # elif model_type == "OpenVINO":
+                #     # OpenVINO Model
+                #     device = "AUTO"
+                #     ov_model = str(channel_config["model_weight"])
+                #     num_cores = os.cpu_count()
+                #     ov_config = {
+                #         "INFERENCE_NUM_THREADS": str(num_cores),
+                #         "PERFORMANCE_HINT": "THROUGHPUT",
+                #         "INFERENCE_PRECISION_HINT": "f32"
+                #     }
+                #     core = Core()
+                #     model = core.read_model(model=ov_model)
+                #     compiled_model = core.compile_model(model=model, device_name=device, config=ov_config)
+                #     pred = compiled_model.create_infer_request()
 
-                    logging.info(f"vino.checkpoint:[Checkpointer] Loading from {ov_model} ...")
+                #     logging.info(f"vino.checkpoint:[Checkpointer] Loading from {ov_model} ...")
                 
                 elif model_type == "YOLO11":
                     # YOLOv11 Model
