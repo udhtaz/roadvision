@@ -2,15 +2,12 @@
 from flask import Flask, request, send_file
 from flask_cors import CORS, logging
 from werkzeug.utils import secure_filename
-import requests
 import wget
 import aiohttp
 import asyncio
 
 # Imports: OS, IO and Environments
 import io
-import shutil
-import sys
 import time
 import datetime
 import os
@@ -57,8 +54,14 @@ image_input.add_argument('returnType', default='img', type=str, location='form')
 image_input.add_argument('selected_model', type=str, default='Detectron2', location='form')
 image_input.add_argument('file', location='files', type=FileStorage)
 
+video_input = reqparse.RequestParser()
+video_input.add_argument('returnType', default='vid', type=str, location='form')
+video_input.add_argument('selected_model', type=str, default='Detectron2', location='form')
+video_input.add_argument('file', location='files', type=FileStorage)
+
 heath_check_ns = Namespace('API Status', description='This is to check if the api is up and running...')
-image_detection_ns = Namespace('Road Vision - Detection', description='This will generate rectangular bounding boxes or segmentation masks around the detections')
+image_detection_ns = Namespace('Road Vision - Image Detection', description='This will generate bounding boxes and segmentation masks around the image detections')
+video_detection_ns = Namespace('Road Vision - Video Detection', description='This will generate bounding boxes and segmentation masks around the video detections')
 
 # Load Environment Variables
 load_dotenv()  
@@ -73,7 +76,7 @@ app.config["DEBUG"] = False # turn off in prod
 
 api = Api(app, version='1.0', title='Road Vision', description='Road Vision API Documentation')
 
-for roadvision_namespace in [heath_check_ns, image_detection_ns]:
+for roadvision_namespace in [heath_check_ns, image_detection_ns, video_detection_ns]:
     api.add_namespace(roadvision_namespace)
 
 def load_models(roadvision_config):
@@ -96,23 +99,6 @@ def load_models(roadvision_config):
                     cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = channel_config["model_threshold"]
                     pred = DefaultPredictor(cfg)
                 
-                # elif model_type == "OpenVINO":
-                #     # OpenVINO Model
-                #     device = "AUTO"
-                #     ov_model = str(channel_config["model_weight"])
-                #     num_cores = os.cpu_count()
-                #     ov_config = {
-                #         "INFERENCE_NUM_THREADS": str(num_cores),
-                #         "PERFORMANCE_HINT": "THROUGHPUT",
-                #         "INFERENCE_PRECISION_HINT": "f32"
-                #     }
-                #     core = Core()
-                #     model = core.read_model(model=ov_model)
-                #     compiled_model = core.compile_model(model=model, device_name=device, config=ov_config)
-                #     pred = compiled_model.create_infer_request()
-
-                #     logging.info(f"vino.checkpoint:[Checkpointer] Loading from {ov_model} ...")
-                
                 elif model_type == "YOLO11":
                     # YOLOv11 Model
                     device = channel_config["device"] if use_cuda else "cpu"  # Determine device availability 
@@ -134,7 +120,6 @@ def load_models(roadvision_config):
     except Exception as error:
         roadvision_notification = f"roadvision Error: {error}, Description: {roadvision_channel} model/config not found"
         logging.exception(roadvision_notification)
-
 
 def get_channel_configurations(roadvision_channel, config_params):
     '''Returns a specific parameter from the config of a roadvision configuration'''
@@ -167,22 +152,33 @@ def get_file_size(file_path):
             file_size_byte /= 1024.0
 
 def get_picture_info(channel_config, pred, image, mask=False):
-    ''' images the image and returns the following results
-         image_quality, present_classes and coordinates
-    '''
+    """
+    Processes the image and returns key information including:
+    image quality, detected classes, coordinates, and optionally a masked image.
+
+    Args:
+        channel_config (dict): Model configuration.
+        pred: The model predictor (Detectron2 or YOLO11).
+        image (str): Path to the input image.
+        mask (bool): Whether to generate a masked image.
+
+    Returns:
+        dict: A dictionary containing detection results and metadata.
+    """
     picture_info = {
-        'num_of_detects' : None,
-        'image_quality' : None,
-        'present_classes' : {},
+        'num_of_detects': None,
+        'image_quality': None,
+        'present_classes': {},
         'coordinate': {},
         'masked_image': None,
     }
 
     roadvision_helper = roadvision_Helpers(channel_config)
-    #get file size
+
+    # Monitor file size
     file_size = f"file size: {get_file_size(image)}"
 
-    #get gpu usage if available
+    # Monitor GPU usage if available
     gpu_resource_usage = ""
     if use_cuda:
         nvidia_smi.nvmlInit()
@@ -190,62 +186,70 @@ def get_picture_info(channel_config, pred, image, mask=False):
         for i in range(device_count):
             handle = nvidia_smi.nvmlDeviceGetHandleByIndex(i)
             mem = nvidia_smi.nvmlDeviceGetMemoryInfo(handle)
-            inactive_mem = (mem.free/mem.total)*100
+            inactive_mem = (mem.free / mem.total) * 100
             active_mem = 100 - inactive_mem
-            gpu_resource_usage += f"|Device {i}: {nvidia_smi.nvmlDeviceGetName(handle).decode()}| free_mem:{inactive_mem:.1f}%| in_use_mem:{active_mem:.1f}%|"
-            
+            gpu_resource_usage += (
+                f"|Device {i}: {nvidia_smi.nvmlDeviceGetName(handle).decode()}| "
+                f"free_mem:{inactive_mem:.1f}%| in_use_mem:{active_mem:.1f}%|"
+            )
     else:
         gpu_resource_usage = "GPU not available"
 
+    # Monitor CPU usage and memory
     mem_info = psutil.virtual_memory()._asdict()
-    active_mem = (mem_info["used"]/mem_info["total"])*100
+    active_mem = (mem_info["used"] / mem_info["total"]) * 100
     inactive_mem = 100 - active_mem
     cpu_usage = psutil.cpu_percent()
-    cpu_resource_usage = f"cpu: {cpu_usage}%, free_mem: {inactive_mem:.1f}%, in_use_mem: {active_mem:.1f}%"
-        
-    
+    cpu_resource_usage = (
+        f"cpu: {cpu_usage}%, free_mem: {inactive_mem:.1f}%, in_use_mem: {active_mem:.1f}%"
+    )
+
+    # Log system metrics
     roadvision_notification = f"{channel_config['roadvision_identifier']} Notification: roadvision Helper created."
     logging.info(roadvision_notification)
     logging.info(file_size)
     logging.info(cpu_resource_usage)
     logging.info(gpu_resource_usage)
 
+    # Check image quality
     image_quality = roadvision_helper.check_blurry(image)
-    if  image_quality == "Blurry":
-        if channel_config['save_blurry']: pass
+    if image_quality == "Blurry" and channel_config['save_blurry']:
+        picture_info['image_quality'] = "Blurry"
     else:
-        image_quality = "Good"
-        if channel_config['save_image']: pass
-    
-    if mask:
-        img_output, present_classes, full_output, detected, sure_classes, masked_base64_str = roadvision_helper.inference_draw(pred, image)
-        picture_info['masked_image'] = masked_base64_str
-    else:
+        picture_info['image_quality'] = "Good"
+
+    # Perform inference
+    if isinstance(pred, YOLO):  # YOLO11 inference
+        if mask:
+            raise ValueError("Masked images are not supported for YOLO11.")
         img_output, present_classes, full_output, detected, sure_classes = roadvision_helper.inference(pred, image)
-    
+        coordinates = {}
+        for result in full_output:
+            for box in result.boxes:
+                cls_id = int(box.cls)
+                cls_name = channel_config['classes'].get(cls_id, "Unknown")
+                coordinates[cls_name] = coordinates.get(cls_name, [])
+                coordinates[cls_name].append(box.xywh.tolist())
+    else:  # Detectron2 inference
+        if mask:
+            img_output, present_classes, full_output, detected, sure_classes, masked_base64_str = roadvision_helper.inference_draw(pred, image)
+            picture_info['masked_image'] = masked_base64_str
+        else:
+            img_output, present_classes, full_output, detected, sure_classes = roadvision_helper.inference(pred, image)
+        coordinates = roadvision_helper.get_coordinates(full_output, detected)
 
-    coordinates = roadvision_helper.get_coordinates(full_output, detected)
+    # Apply vision rules if necessary
     if channel_config['fine_tune']:
-        rule_info, img_output =  channel_config['detect_rules'](channel_config, sure_classes, present_classes, 
-                                                            img_output, full_output)
+        rule_info, img_output = channel_config['detect_rules'](channel_config, sure_classes, present_classes, img_output, full_output)
     else:
-        rule_info = channel_config['detect_rules'](channel_config, sure_classes, present_classes, 
-                                                            img_output, full_output)
-    
+        rule_info = channel_config['detect_rules'](channel_config, sure_classes, present_classes, img_output, full_output)
 
-    # if image_quality == "Blurry":
-    #     picture_info['image_quality'] = image_quality
-    # else:
-    #     picture_info['image_quality'] = image_quality
-    #     picture_info['present_classes'] =  img_output
-    #     picture_info['coordinate'] = coordinates
-    #     picture_info['num_of_detects'] = rule_info['num_of_detects']
-
-
-    picture_info['image_quality'] = image_quality
-    picture_info['present_classes'] =  img_output
-    picture_info['coordinate'] = coordinates
-    picture_info['num_of_detects'] = rule_info['num_of_detects']
+    # Update picture info
+    picture_info.update({
+        'present_classes': img_output,
+        'coordinate': coordinates,
+        'num_of_detects': rule_info.get('num_of_detects', 0),
+    })
 
     return picture_info
 
@@ -271,68 +275,9 @@ def health_check_channel(roadvision_channel):
     
     return roadvision_notification
 
-@app.route('/analyse_bbox/<roadvision_channel>', methods=["POST"])
-async def analyse_bbox(roadvision_channel):
-    try:
-        channel_config = roadvision_config[roadvision_channel]
 
-        #extracting image from file
-        return_type = request.form.to_dict(flat=False)['returnType'][0]
-        uploaded_image = request.files['file']
-        filename = secure_filename(uploaded_image.filename)
-        uploaded_image.save(filename)
-        image = filename
-
-        picture_info = get_picture_info(channel_config, 
-                                    roadvision_predictors[str(channel_config["model_weight"])], image)
-        picture_info['present_classes'] = {str(key): value for key, value in picture_info['present_classes'].items()} 
-
-        # analyse the picture
-        try:
-            roadvision_helper = roadvision_Helpers(channel_config)
-            roadvision_notification = f"{channel_config['roadvision_identifier']} Notification: roadvision Helper created"
-            logging.info(roadvision_notification)
-
-            img_output, present_classes, full_output, \
-            detected, sure_classes = roadvision_helper.inference(roadvision_predictors[str(channel_config["model_weight"])], 
-                                                              image, pred_box_scale=False)
-            pred_boxes = full_output["instances"].pred_boxes.tensor.cpu().numpy()
-            pred_labels = full_output["instances"].pred_classes.cpu().numpy()
-            pred_labels = [channel_config["classes"][label] for label in pred_labels]
-            pred_confidence = full_output["instances"].scores.cpu().numpy()
-            img = cv2.imread(image, cv2.IMREAD_UNCHANGED)
-            detect_color = {detect:(randint(0,255), randint(0,255), randint(0,255)) for detect in pred_labels}
-
-            pd_len = len(pred_labels)
-            for i in range(pd_len):
-                start_point = tuple(int(i.item()) for i in pred_boxes[i][:2])
-                end_point = tuple(int(i.item()) for i in pred_boxes[i][2:]) # minus 10 so the text sits above the bounding box
-                
-                text_point = tuple(int(i.item())-10 for i in pred_boxes[i][:2])
-                thickness = 2
-                detect = pred_labels[i]
-                box_color = detect_color[detect]
-                bbox_txt = f"{detect} ({int(pred_confidence[i] * 100)}%)"
-                cv2.rectangle(img, start_point, end_point, box_color, thickness, cv2.FILLED)
-                cv2.putText(img, bbox_txt, text_point, cv2.FONT_HERSHEY_SIMPLEX, 1.0, box_color, thickness)
-
-            cv2.imwrite('infered_image.jpg', img)
-
-            os.remove(image)
-            if return_type=="json":
-                return picture_info
-            return send_file('infered_image.jpg', mimetype='image/jpg')
-        except Exception as error:
-            roadvision_notification = f"roadvision Error: {error}, Description: error analysing {image}"
-            logging.exception(roadvision_notification)
-            return roadvision_notification
-    except Exception as error:
-        roadvision_notification = f"roadvision Error: {error}, Description: {roadvision_channel} not found"
-        logging.exception(roadvision_notification)
-        return roadvision_notification
-
-@app.route('/analyse_segm/<roadvision_channel>', methods=["POST"])
-async def analyse_segm(roadvision_channel):
+@app.route('/analyse_image_segm/<roadvision_channel>', methods=["POST"])
+async def analyse_image_segm(roadvision_channel):
     try:
         channel_config = roadvision_config[roadvision_channel]
 
@@ -378,61 +323,6 @@ async def analyse_segm(roadvision_channel):
 
 # FUNCTIONS
 
-async def image_bbox(roadvision_channel, return_type, uploaded_image):
-    try:
-        channel_config = roadvision_config[roadvision_channel]
-
-        filename = secure_filename(uploaded_image.filename)
-        uploaded_image.save(filename)
-        image = filename
-
-        picture_info = get_picture_info(channel_config, 
-                                    roadvision_predictors[str(channel_config["model_weight"])], image)
-        picture_info['present_classes'] = {str(key): value for key, value in picture_info['present_classes'].items()} 
-
-        try:
-            roadvision_helper = roadvision_Helpers(channel_config)
-            roadvision_notification = f"{channel_config['roadvision_identifier']} Notification: roadvision Helper created"
-            logging.info(roadvision_notification)
-
-            img_output, present_classes, full_output, \
-            detected, sure_classes = roadvision_helper.inference(roadvision_predictors[str(channel_config["model_weight"])], 
-                                                              image, pred_box_scale=False)
-            pred_boxes = full_output["instances"].pred_boxes.tensor.cpu().numpy()
-            pred_labels = full_output["instances"].pred_classes.cpu().numpy()
-            pred_labels = [channel_config["classes"][label] for label in pred_labels]
-            pred_confidence = full_output["instances"].scores.cpu().numpy()
-            img = cv2.imread(image, cv2.IMREAD_UNCHANGED)
-            detect_color = {detect:(randint(0,255), randint(0,255), randint(0,255)) for detect in pred_labels}
-
-            pd_len = len(pred_labels)
-            for i in range(pd_len):
-                start_point = tuple(int(i.item()) for i in pred_boxes[i][:2])
-                end_point = tuple(int(i.item()) for i in pred_boxes[i][2:])             
-                text_point = tuple(int(i.item())-10 for i in pred_boxes[i][:2]) # minus 10 so the text sits above the bounding box
-                thickness = 2
-                detect = pred_labels[i]
-                box_color = detect_color[detect]
-                bbox_txt = f"{detect} ({int(pred_confidence[i] * 100)}%)"
-                cv2.rectangle(img, start_point, end_point, box_color, thickness, cv2.FILLED)
-                cv2.putText(img, bbox_txt, text_point, cv2.FONT_HERSHEY_SIMPLEX, 1.0, box_color, thickness)
-
-            cv2.imwrite('infered_image.jpeg', img)
-
-            os.remove(image)
-            if return_type=="json":
-                return picture_info
-            return send_file('infered_image.jpeg', mimetype='image/jpeg')
-
-        except Exception as error:
-            roadvision_notification = {"roadvision Error": f"{error}, Description: error analysing {image}"}
-            logging.exception(roadvision_notification)
-            return roadvision_notification
-    except Exception as error:
-        roadvision_notification = {"roadvision Error": f"{error}, Description: {roadvision_channel} not found"}
-        logging.exception(roadvision_notification)
-        return roadvision_notification
-
 async def image_segm(roadvision_channel, return_type, uploaded_image):
     try:
         channel_config = roadvision_config[roadvision_channel]
@@ -472,6 +362,50 @@ async def image_segm(roadvision_channel, return_type, uploaded_image):
         logging.exception(roadvision_notification)
         return roadvision_notification
 
+async def video_segm(roadvision_channel, return_type, uploaded_video=None):
+    """
+    Handles video segmentation for a given channel and return type.
+
+    Args:
+        roadvision_channel (str): The selected model channel.
+        return_type (str): Either 'json' or 'vid'.
+        uploaded_video: The uploaded video file.
+
+    Returns:
+        dict or str: JSON with detection counts or path to processed video.
+    """
+    try:
+        # Get channel configuration
+        channel_config = roadvision_config[roadvision_channel]
+        predictor = roadvision_predictors[str(channel_config["model_weight"])]
+
+        # Handle video source
+        roadvision_helper = roadvision_Helpers(channel_config)
+        if uploaded_video:
+            video_source = roadvision_helper.save_uploaded_video(uploaded_video)
+        else:
+            video_source = 0  # Default to webcam if no file is provided
+
+        # Determine output path if return_type is video
+        output_path = None
+        if return_type == "vid":
+            output_path = "processed_video.mp4"
+
+        # Process video based on the model type
+        if channel_config["model"] == "YOLO11":
+            result = roadvision_helper.yolo11_inference_video(predictor, video_source, return_type, output_path)
+        else:
+            result = roadvision_helper.process_video(predictor, video_source, return_type, output_path)
+
+        # Cleanup uploaded video file
+        if video_source != 0:
+            os.remove(video_source)
+
+        return result
+    except Exception as error:
+        logging.exception(f"Error processing video: {error}")
+        return {"error": str(error)}, 500
+
 
 ## ROUTES
 
@@ -484,21 +418,7 @@ class APIStatus(Resource):
 
         return roadvision_notification
     
-
-@image_detection_ns.route('/bbox')
-class ImageBoundingBox(Resource):   
-    @image_detection_ns.expect(image_input)
-    def post(self):
-        args = image_input.parse_args()
-        roadvision_channel = args['selected_model']
-        return_type = args['returnType']
-        uploaded_image = args['file'] 
-
-        output = asyncio.run(image_bbox(roadvision_channel, return_type, uploaded_image))
-        return output
-
-
-@image_detection_ns.route('/segm')
+@image_detection_ns.route('/img_segm')
 class ImageSegmentation(Resource):   
     @image_detection_ns.expect(image_input)
     def post(self):
@@ -507,7 +427,28 @@ class ImageSegmentation(Resource):
         return_type = args['returnType']
         uploaded_image = args['file']  
 
+        start_processing = time.perf_counter()
         output = asyncio.run(image_segm(roadvision_channel, return_type, uploaded_image))
+
+        finished_processing = time.perf_counter() - start_processing
+        logging.info(f'Time taken to process image with {roadvision_channel}: {finished_processing:.6f} seconds')
+
+        return output
+
+@video_detection_ns.route('/vid_segm')
+class VideoSegmentation(Resource):
+    @video_detection_ns.expect(video_input) 
+    def post(self):
+        args = video_input.parse_args()  
+        roadvision_channel = args['selected_model']
+        return_type = args['returnType']
+        uploaded_video = args['file']
+
+        start_processing = time.perf_counter()
+        output = asyncio.run(video_segm(roadvision_channel, return_type, uploaded_video))
+        finished_processing = time.perf_counter() - start_processing
+
+        logging.info(f"Time taken to process video with {roadvision_channel}: {finished_processing:.6f} seconds")
         return output
 
 
