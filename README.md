@@ -35,7 +35,7 @@ https://github.com/user-attachments/assets/cb679542-2aa1-4542-8d63-ba48783c27be
 The repository is structured as follows:
 
 ```plaintext
-ROADVISION/
+roadvision/
 ├── inference/                # Image inference foerm model predictions
 ├── training_scripts/         # Scripts to train custom models
 ├── app.py                    # Main Flask application
@@ -127,7 +127,7 @@ DEBUG=False
 
 ## References
 
-The ROADVISION project utilizes datasets and methodologies from the following sources:
+The ROADVISION project utilizes datasets from the following sources:
 
 1. **Pothole Dataset 1**:
 
