@@ -1,6 +1,6 @@
 # RoadVision
 
-RoadVision is a Flask-based computer vision application designed to detect surface irregularities such as bumps and potholes on roadways. By leveraging cutting-edge deep learning frameworks like Detectron2 and YOLO, ROADVISION provides reliable and efficient analysis of road conditions through image and video segmentation.
+RoadVision is a Flask-based computer vision application designed to detect surface irregularities such as bumps and potholes on roadways. By leveraging cutting-edge deep learning frameworks like Detectron2 and YOLO, RoadVision provides reliable and efficient analysis of road conditions through image and video segmentation.
 
 https://github.com/user-attachments/assets/cb679542-2aa1-4542-8d63-ba48783c27be
 
@@ -25,7 +25,7 @@ https://github.com/user-attachments/assets/cb679542-2aa1-4542-8d63-ba48783c27be
 - **Blurry Image Detection**: Automatically filters blurry images to ensure accurate analysis.
 - **Video Processing**: Processes video files or live camera streams for segmentation.
 - **Extensible Configuration**: Highly configurable models and rules for different use cases.
-- **RESTful API**: Fully functional API for image and video analysis.
+- **REST API**: Fully functional API for image and video analysis.
 - **Dockerized Deployment**: Easily deployable using Docker and a Bash script.
 
 ---
@@ -77,7 +77,7 @@ roadvision/
    pip install -r requirements.txt
    ```
 
-3. Build and run the Docker container using the Bash script:
+3. Build and run the Docker container by executing the following command in the Bash script:
 
    ```bash
    bash init.sh
@@ -89,10 +89,10 @@ roadvision/
 
 ### Running the API
 
-To start the ROADVISION API, execute the following command using Docker and the provided Bash script:
+To run the ROADVISION API, execute the below url in browser tab after succesfully building on Docker:
 
 ```bash
-bash init.sh
+http://127.0.0.1/
 ```
 
 ### Endpoints
@@ -104,13 +104,21 @@ bash init.sh
 
 - **Image Segmentation**
 
-  - **POST** `/analyse_image_segm/<roadvision_channel>`\
-    Upload an image for segmentation. Specify `roadvision_channel` as `Detectron2` or `YOLO11`.
+  - **POST** `/img_segm/`\
+    Upload an image for segmentation.
+    
+    Specify `return Type` as `img` or `json` (default is `img`).
+    
+    Specify `selected model` as `Detectron2` or `YOLO11`.
 
 - **Video Segmentation**
 
-  - **POST** `/vid_segm/<roadvision_channel>`\
-    Upload a video for segmentation. Specify `roadvision_channel` as `Detectron2` or `YOLO11`.
+  - **POST** `/vid_segm/`\
+    Upload a video for segmentation.
+    
+    Specify `return Type` as `vid` or `json` (default is `vid`).
+    
+    Specify `selected model` as `Detectron2` or `YOLO11`.
 
 ---
 
@@ -127,7 +135,7 @@ DEBUG=False
 
 ## References
 
-The ROADVISION project utilizes datasets from the following sources:
+The ROADVISION project utilizes datasets and frameworks from the following sources:
 
 1. **Pothole Dataset 1**:
 
@@ -142,6 +150,18 @@ GitHub Repository: [https://github.com/jaygala24/pothole-detection](https://gith
 
    - VARMA, V. S. K. P. (2018). Speed Hump/Bump Dataset. *Mendeley Data*, V1. doi: [10.17632/xt5bjdhy5g.1](https://data.mendeley.com/datasets/xt5bjdhy5g/1)
 
+4. **Data Augmentation Platform**:
+
+   - Dwyer, B., Nelson, J., Hansen, T., et. al. (2024). Roboflow (Version 1.0) [Software]. Available from https://roboflow.com. computer vision.
+
+5. **Detectron2**:
+   
+   - Wu, Y., Kirillov, A., Massa, F., Lo, W.-Y., & Girshick, R. (2019). Detectron2. Retrieved from [https://github.com/facebookresearch/detectron2](https://github.com/facebookresearch/detectron2).
+
+6. **YOLO11**:
+
+   - Jocher, G., & Qiu, J. (2024). Ultralytics YOLO11 (Version 11.0.0) [Software]. Retrieved from [https://github.com/ultralytics/ultralytics](https://github.com/ultralytics/ultralytics).
+   
 ---
 
 ## Contributing
