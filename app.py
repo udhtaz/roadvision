@@ -5,6 +5,7 @@ from werkzeug.utils import secure_filename
 import wget
 import aiohttp
 import asyncio
+import requests
 
 # Imports: OS, IO and Environments
 import io
@@ -79,47 +80,72 @@ api = Api(app, version='1.0', title='Road Vision', description='Road Vision API 
 for roadvision_namespace in [heath_check_ns, image_detection_ns, video_detection_ns]:
     api.add_namespace(roadvision_namespace)
 
-def load_models(roadvision_config):
+
+def download_model(model_name, model_path, get_presigned_url):
+    '''Downloads the model securely using a pre-signed URL if not already present'''
+    if not os.path.exists(model_path): 
+        try:
+            model_url = get_presigned_url()
+            logging.info(f"\nDownloading {model_name} model from secure URL...")
+
+            response = requests.get(model_url, stream=True)
+            response.raise_for_status()
+
+            with open(model_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    f.write(chunk)
+
+            logging.info(f"✅ {model_name} model successfully downloaded.\n")
+
+        except Exception as error:
+            logging.error(f"Error downloading {model_name}: {error}")
+    else:
+        logging.info(f"{model_name} model already exists")
+
+def load_models():
     """Loads all available models."""
     preds = {}
     try:
         start = time.perf_counter()
-        for roadvision_channel, channel_config in roadvision_config.items():
-            if str(channel_config["model_weight"]) not in preds:
-                model_type = channel_config["model"]
-                
-                if model_type == "Detectron2":
-                    # Detectron2 Model
-                    device = channel_config["device"] if use_cuda else "cpu"  # Determine device availability
-                    cfg = get_cfg()
-                    cfg.merge_from_file(model_zoo.get_config_file(channel_config["model_config"]))
-                    cfg.MODEL.WEIGHTS = str(channel_config["model_weight"])
-                    cfg.MODEL.ROI_HEADS.NUM_CLASSES = channel_config["num_of_classes"]
-                    cfg.MODEL.DEVICE = device  # Use determined device
-                    cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = channel_config["model_threshold"]
-                    pred = DefaultPredictor(cfg)
-                
-                elif model_type == "YOLO11":
-                    # YOLOv11 Model
-                    device = channel_config["device"] if use_cuda else "cpu"  # Determine device availability 
-                    yolo_model = str(channel_config["model_weight"])
-                    pred = YOLO(channel_config["model_weight"])
-                    pred.overrides["conf"] = channel_config["model_threshold"]
-                    pred.overrides["device"] = device  # Set device for YOLO
-                    logging.info(f"yolo.checkpoint:[Checkpointer] Loading from {yolo_model} ...")
-                    
-                else:
-                    raise ValueError(f"Unsupported model type: {model_type}")
-                
-                preds[str(channel_config["model_weight"])] = pred
-        
+        for model_key, channel_config in config_options.items():
+            model_weight = channel_config["model_weight"]
+            model_path = model_weight 
+
+            download_model(model_key, model_path, channel_config['model_url'])
+
+            model_type = channel_config["model"]
+
+            if model_type == "Detectron2":
+                # Detectron2 Model
+                device = channel_config["device"] if use_cuda else "cpu"
+                cfg = get_cfg()
+                cfg.merge_from_file(model_zoo.get_config_file(channel_config["model_config"]))
+                cfg.MODEL.WEIGHTS = model_path
+                cfg.MODEL.ROI_HEADS.NUM_CLASSES = channel_config["num_of_classes"]
+                cfg.MODEL.DEVICE = device
+                cfg.MODEL.ROI_HEADS.SCORE_THRESH_TEST = channel_config["model_threshold"]
+                pred = DefaultPredictor(cfg)
+
+            elif model_type == "YOLO11":
+                # YOLOv11 Model
+                device = channel_config["device"] if use_cuda else "cpu"
+                pred = YOLO(model_path)
+                pred.overrides["conf"] = channel_config["model_threshold"]
+                pred.overrides["device"] = device
+                logging.info(f"YOLOv11 model loaded from {model_path}")
+
+            else:
+                raise ValueError(f"Unsupported model type: {model_type}")
+
+            preds[model_key] = pred
+
         elapsed = time.perf_counter() - start
         logging.info(f'Time taken to load all models: {elapsed:.6f} seconds')
 
         return preds
     except Exception as error:
-        roadvision_notification = f"roadvision Error: {error}, Description: {roadvision_channel} model/config not found"
-        logging.exception(roadvision_notification)
+        logging.exception(f"Error loading models: {error}")
+        return preds
 
 def get_channel_configurations(roadvision_channel, config_params):
     '''Returns a specific parameter from the config of a roadvision configuration'''
@@ -275,7 +301,6 @@ def health_check_channel(roadvision_channel):
     
     return roadvision_notification
 
-
 @app.route('/analyse_image_segm/<roadvision_channel>', methods=["POST"])
 async def analyse_image_segm(roadvision_channel):
     try:
@@ -288,7 +313,7 @@ async def analyse_image_segm(roadvision_channel):
         uploaded_image.save(filename)
         image = filename
         picture_info = get_picture_info(channel_config, 
-                                    roadvision_predictors[str(channel_config["model_weight"])], image)
+                                    roadvision_predictors[roadvision_channel], image)
         
         picture_info['present_classes'] = {str(key): value for key, value in picture_info['present_classes'].items()}   
         # Analyse the picture
@@ -299,7 +324,7 @@ async def analyse_image_segm(roadvision_channel):
 
             # Call inference_draw to get masked_base64_str
             img_output, present_classes, full_output, \
-            detected, sure_classes, masked_base64_str = roadvision_helper.inference_draw(roadvision_predictors[str(channel_config["model_weight"])], 
+            detected, sure_classes, masked_base64_str = roadvision_helper.inference_draw(roadvision_predictors[roadvision_channel], 
                                                                                           image)
 
             # Save base64 image to file using the new method
@@ -331,7 +356,8 @@ async def image_segm(roadvision_channel, return_type, uploaded_image):
         uploaded_image.save(filename)
         image = filename
         picture_info = get_picture_info(channel_config, 
-                                    roadvision_predictors[str(channel_config["model_weight"])], image)
+                                    roadvision_predictors[roadvision_channel], 
+                                    image)
         
         picture_info['present_classes'] = {str(key): value for key, value in picture_info['present_classes'].items()}   
 
@@ -342,8 +368,9 @@ async def image_segm(roadvision_channel, return_type, uploaded_image):
 
             # Call inference_draw to get masked_base64_str
             img_output, present_classes, full_output, \
-            detected, sure_classes, masked_base64_str = roadvision_helper.inference_draw(roadvision_predictors[str(channel_config["model_weight"])], 
-                                                                                          image)
+            detected, sure_classes, masked_base64_str = roadvision_helper.inference_draw(
+                roadvision_predictors[roadvision_channel],
+                image)
 
             # Save base64 image to file using the new method
             saved_image_path = roadvision_helper.save_base64_image(masked_base64_str, 'saved_image.jpg')
@@ -361,7 +388,7 @@ async def image_segm(roadvision_channel, return_type, uploaded_image):
         roadvision_notification = f"roadvision Error: {error}, Description: {roadvision_channel} not found"
         logging.exception(roadvision_notification)
         return roadvision_notification
-
+    
 async def video_segm(roadvision_channel, return_type, uploaded_video=None):
     """
     Handles video segmentation for a given channel and return type.
@@ -377,7 +404,7 @@ async def video_segm(roadvision_channel, return_type, uploaded_video=None):
     try:
         # Get channel configuration
         channel_config = roadvision_config[roadvision_channel]
-        predictor = roadvision_predictors[str(channel_config["model_weight"])]
+        predictor = roadvision_predictors[roadvision_channel]
 
         # Handle video source
         roadvision_helper = roadvision_Helpers(channel_config)
@@ -457,7 +484,7 @@ if __name__ == '__main__':
     # Load Configs and Models
     use_cuda = torch.cuda.is_available()
     roadvision_config = config.config_options
-    roadvision_predictors = load_models(roadvision_config)
+    roadvision_predictors = load_models()
 
     # log file
     setup_logger()
