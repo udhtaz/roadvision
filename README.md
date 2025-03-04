@@ -19,6 +19,8 @@ https://github.com/user-attachments/assets/cb679542-2aa1-4542-8d63-ba48783c27be
 
 ---
 
+https://github.com/user-attachments/assets/7e6567c1-be19-49e8-bb32-d506ec198188
+
 ## Features
 
 - **Multi-Model Support**: Integrates both Detectron2 and YOLO for object detection.
